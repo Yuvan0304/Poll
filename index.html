@@ -102,9 +102,7 @@
   </div>
 
 <script type="module">
-  /************************************************
-   *  FIREBASE CONFIG - KEEP YOUR EXISTING VALUES
-   ************************************************/
+
   const firebaseConfig = {
     apiKey: "AIzaSyBRxGX2ySr1gwNP2I728IGXwTWzBTxGGlk",
     authDomain: "poll-ysr.firebaseapp.com",
@@ -333,7 +331,7 @@
   // initial empty results (until DB onValue loads)
   updateLocalResults({});
 </script>
-<!-- ===== Paste this BEFORE </body> ===== -->
+
 <script type="module">
   // --------- 1) Add your firebaseConfig here (replace placeholders) ----------
   const firebaseConfig = {
@@ -411,7 +409,7 @@
     }
   }
 
-  // --------- 7) Vote function (safe increment using transaction) ----------
+
   // optionId should be like "green", "blue" etc. Matches your DB structure: /votes/{optionId}
   async function vote(optionId) {
     // first double-check local voters node
@@ -439,7 +437,7 @@
     }
   }
 
-  // --------- 8) Refresh counts on UI (reads /votes) ----------
+ 
   async function refreshCounts() {
     try {
       const rootRef = ref(db);
@@ -456,7 +454,6 @@
     }
   }
 
-  // --------- 9) Hook buttons ----------
   voteButtons.forEach(btn => {
     btn.addEventListener('click', (e) => {
       const option = btn.getAttribute('data-option'); // give each button data-option="green"
@@ -466,14 +463,15 @@
     });
   });
 
-  // --------- 10) Start: check and refresh initial counts ----------
+
   (async () => {
     const already = await checkAlreadyVoted();
     await refreshCounts();
   })();
 
 </script>
-<!-- ===== end paste ===== -->
+
 
 </body>
 </html>
+
