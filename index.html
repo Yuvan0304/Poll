@@ -333,6 +333,147 @@
   // initial empty results (until DB onValue loads)
   updateLocalResults({});
 </script>
+<!-- ===== Paste this BEFORE </body> ===== -->
+<script type="module">
+  // --------- 1) Add your firebaseConfig here (replace placeholders) ----------
+  const firebaseConfig = {
+    apiKey: "AIzaSyBRxGX2ySr1gwNP2I728IGXwTWzBTxGGlk",
+    authDomain: "poll-ysr.firebaseapp.com",
+    databaseURL: "https://poll-ysr-default-rtdb.firebaseio.com/",
+    projectId: "poll-ysr",
+    storageBucket: "poll-ysr.firebasestorage.app",
+    messagingSenderId: "724261938489",
+    appId: "1:724261938489:web:7d8f908dc8ade2698b74e8" 
+  };
+
+  // --------- 2) Import Firebase modules (CDN) ----------
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
+  import {
+    getDatabase,
+    ref,
+    runTransaction,
+    get,
+    child,
+    set
+  } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-database.js";
+
+  // --------- 3) Initialize ----------
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // --------- 4) Helper: generate or get persistent voter id (localStorage) ----------
+  function getVoterId() {
+    let id = localStorage.getItem('voterId');
+    if (!id) {
+      id = 'v-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      localStorage.setItem('voterId', id);
+    }
+    return id;
+  }
+  const voterId = getVoterId();
+
+  // --------- 5) Basic DOM helpers (edit selectors to match your HTML) ----------
+  // Update these selectors to match your buttons / elements
+  const voteButtons = document.querySelectorAll('.vote-btn'); // add class 'vote-btn' to each option button
+  const alreadyMsg = document.getElementById('already-voted-msg'); // element that shows "You've already voted"
+  const votesCountEls = document.querySelectorAll('[data-vote-count]'); // optional: elements to display counts
+
+  // disable voting UI
+  function disableVotingUI() {
+    voteButtons.forEach(b => { b.disabled = true; b.classList.add('disabled'); });
+    if (alreadyMsg) alreadyMsg.style.display = 'block';
+  }
+
+  // enable voting UI
+  function enableVotingUI() {
+    voteButtons.forEach(b => { b.disabled = false; b.classList.remove('disabled'); });
+    if (alreadyMsg) alreadyMsg.style.display = 'none';
+  }
+
+  // --------- 6) Check if user already voted on load ----------
+  async function checkAlreadyVoted() {
+    try {
+      const voterRef = ref(db, 'voters/' + voterId);
+      const snap = await get(voterRef);
+      if (snap.exists()) {
+        // already voted
+        disableVotingUI();
+        return true;
+      } else {
+        enableVotingUI();
+        return false;
+      }
+    } catch (err) {
+      console.error('DB read error', err);
+      // if DB error, leave UI enabled but you may warn
+      enableVotingUI();
+      return false;
+    }
+  }
+
+  // --------- 7) Vote function (safe increment using transaction) ----------
+  // optionId should be like "green", "blue" etc. Matches your DB structure: /votes/{optionId}
+  async function vote(optionId) {
+    // first double-check local voters node
+    const voterRef = ref(db, 'voters/' + voterId);
+    const voterSnap = await get(voterRef);
+    if (voterSnap.exists()) {
+      disableVotingUI();
+      return; // already voted
+    }
+
+    // run transaction on vote count
+    const optionRef = ref(db, 'votes/' + optionId);
+    try {
+      await runTransaction(optionRef, (current) => {
+        return (current || 0) + 1;
+      });
+      // mark the voter (so next time they cannot vote)
+      await set(voterRef, { votedAt: Date.now(), option: optionId });
+      disableVotingUI();
+      // optionally update UI counts (you can call a refresh function)
+      await refreshCounts();
+    } catch (err) {
+      console.error('Vote error', err);
+      alert('Failed to send vote. Try again.');
+    }
+  }
+
+  // --------- 8) Refresh counts on UI (reads /votes) ----------
+  async function refreshCounts() {
+    try {
+      const rootRef = ref(db);
+      const snap = await get(child(rootRef, 'votes'));
+      if (!snap.exists()) return;
+      const data = snap.val(); // object { green: 10, blue: 5, ... }
+      // update elements with data-vote-count="green" etc.
+      votesCountEls.forEach(el => {
+        const key = el.getAttribute('data-vote-count');
+        if (data[key] !== undefined) el.textContent = data[key];
+      });
+    } catch (err) {
+      console.error('refreshCounts error', err);
+    }
+  }
+
+  // --------- 9) Hook buttons ----------
+  voteButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const option = btn.getAttribute('data-option'); // give each button data-option="green"
+      if (!option) return;
+      btn.disabled = true;
+      vote(option);
+    });
+  });
+
+  // --------- 10) Start: check and refresh initial counts ----------
+  (async () => {
+    const already = await checkAlreadyVoted();
+    await refreshCounts();
+  })();
+
+</script>
+<!-- ===== end paste ===== -->
 
 </body>
 </html>
