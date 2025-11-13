@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -56,13 +55,15 @@
   .btn-red{background:var(--red);}
   .btn-yellow{background:var(--yellow); color:#111;}
   .votes{margin-top:18px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;font-size:14px}
-  .results{margin-top:14px;border-radius:12px;padding:12px;background:#fafafa;border:1px solid rgba(16,24,40,0.03);}
+  .results{margin-top:14px;border-radius:12px;padding:12px;background:#fafafa;border:1px solid rgba(16,24,40,0.03);display:none}
   .result-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px dashed rgba(16,24,40,0.04);}
   .result-row:last-child{border-bottom:0;}
   .bar{height:10px;border-radius:8px;background:rgba(0,0,0,0.06);overflow:hidden;margin-left:12px;flex:1;}
   .bar > i{display:block;height:100%;background:linear-gradient(90deg, rgba(0,0,0,0.12), rgba(0,0,0,0.05));}
   .footer{margin-top:18px;text-align:center;color:var(--muted);font-size:13px}
   .row{display:flex;gap:12px;align-items:center}
+  #votedMsg{display:none;margin:18px 0;padding:12px;border-radius:10px;background:#ecfdf5;border:1px solid #34d399;color:#065f46;align-items:center}
+  #votedMsg span{margin-left:8px}
   @media (max-width:420px){
     body{padding:18px;}
     h1{font-size:28px}
@@ -85,12 +86,14 @@
       <button class="btn btn-red" data-option="Red">Red House (Takshashila)</button>
       <button class="btn btn-yellow" data-option="Yellow">Yellow House (Vikramshila)</button>
 
+      <div id="votedMsg" role="status">✅ <span id="votedText">You've already voted. Thank you!</span></div>
+
       <div class="votes">
         <div id="votesText">Votes: 0</div>
         <button id="refreshBtn" style="background:#2563eb;color:#fff;border-radius:10px;padding:6px 10px;border:none;cursor:pointer">Refresh</button>
       </div>
 
-      <div class="results" id="resultsArea" aria-live="polite" style="display:none;">
+      <div class="results" id="resultsArea" aria-live="polite">
         <!-- result rows inserted here -->
       </div>
 
@@ -99,20 +102,9 @@
   </div>
 
 <script type="module">
-  /***********************************************
-   *  FIREBASE CONFIG - PASTE YOUR CONFIG OBJECT
-   ***********************************************/
-  // Replace the empty object below with your web app firebaseConfig
-  // Example:
-  // const firebaseConfig = {
-  //   apiKey: "ABC",
-  //   authDomain: "your-project.firebaseapp.com",
-  //   databaseURL: "https://your-project-default-rtdb.firebaseio.com",
-  //   projectId: "your-project",
-  //   storageBucket: "your-project.appspot.com",
-  //   messagingSenderId: "...",
-  //   appId: "1:...:web:..."
-  // };
+  /************************************************
+   *  FIREBASE CONFIG - KEEP YOUR EXISTING VALUES
+   ************************************************/
   const firebaseConfig = {
     apiKey: "AIzaSyBRxGX2ySr1gwNP2I728IGXwTWzBTxGGlk",
     authDomain: "poll-ysr.firebaseapp.com",
@@ -123,59 +115,194 @@
     appId: "1:724261938489:web:7d8f908dc8ade2698b74e8"
   };
 
-  // If firebaseConfig.databaseURL is missing, add it in project settings -> Realtime Database -> location -> the URL appears like:
-  // https://<project-id>-default-rtdb.firebaseio.com/
+  const hasConfig = firebaseConfig && firebaseConfig.apiKey && firebaseConfig.databaseURL;
 
-  // If user didn't paste config, disable DB actions but UI still works locally.
-  const hasConfig = firebaseConfig && firebaseConfig.apiKey;
-
-  // Simple DOM refs
+  // DOM refs
   const buttons = document.querySelectorAll('.btn');
   const votesText = document.getElementById('votesText');
   const resultsArea = document.getElementById('resultsArea');
   const refreshBtn = document.getElementById('refreshBtn');
+  const votedMsg = document.getElementById('votedMsg');
+  const votedText = document.getElementById('votedText');
 
+  // simple option keys
+  const OPTIONS = ['Green','Blue','Red','Yellow'];
+
+  // local states
   let db = null;
+  let auth = null;
+  let currentUid = null;
+  let hasVotedLocal = !!localStorage.getItem('poll_voted'); // quick local guard
+
+  // If config missing, UI still works locally (no DB)
   if(hasConfig){
-    // import firebase modules dynamically
-    import('https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js').then(({ initializeApp })=>{
-      import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js').then(({ getDatabase, ref, push, onValue, set, child, get })=>{
-        const app = initializeApp(firebaseConfig);
-        db = getDatabase(app);
-        setupRealtimeListeners();
+    // load firebase app + modules (modular SDK v9) dynamically
+    const appPromise = import('https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js').then(m => m);
+    const dbPromise = import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js').then(m => m);
+    const authPromise = import('https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js').then(m => m);
+
+    Promise.all([appPromise, dbPromise, authPromise]).then(async ([appMod, dbMod, authMod]) => {
+      const { initializeApp } = appMod;
+      const { getDatabase, ref, onValue, runTransaction, get, child, set } = dbMod;
+      const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
+
+      const app = initializeApp(firebaseConfig);
+      db = getDatabase(app);
+      auth = getAuth(app);
+
+      // sign-in anonymously
+      try{
+        await signInAnonymously(auth);
+      }catch(err){
+        // if already signed in or blocked, continue -- onAuthStateChanged will still fire
+        console.warn('Anonymous sign-in error (may be ok):', err.message || err);
+      }
+
+      // listen for auth state
+      onAuthStateChanged(auth, async user => {
+        if(user){
+          currentUid = user.uid;
+          console.log('Signed in uid:', currentUid);
+          // check whether this uid already voted
+          try {
+            const voteSnap = await get(child(ref(db), `poll/votes/${currentUid}`));
+            if(voteSnap && voteSnap.exists()){
+              // user already voted
+              const recorded = voteSnap.val();
+              showVoted(recorded.option);
+            } else if(hasVotedLocal){
+              // localStorage says voted but DB doesn't have record yet; mark UI voted anyway
+              showVoted(null);
+            } else {
+              // not voted
+              enableButtons(true);
+            }
+          } catch(e){
+            console.error('Error checking vote record:', e);
+            enableButtons(true);
+          }
+        } else {
+          // no user yet
+          enableButtons(true);
+        }
       });
+
+      // setup realtime counts listener
+      const countsRef = ref(db, 'poll/counts');
+      onValue(countsRef, snap=>{
+        updateLocalResults(snap.val() || {});
+      }, err => console.error(err));
+
+      // show existing results area if any changes (onValue will call updateLocalResults)
+      // done above
+
+      // helper to cast a vote (only when uid present)
+      async function castVote(uid, option){
+        if(!db) return;
+        // guard
+        if(!OPTIONS.includes(option)) return;
+
+        const userVoteRef = ref(db, `poll/votes/${uid}`);
+        const optCountRef = ref(db, `poll/counts/${option}`);
+
+        try {
+          // write user vote (non-transactional) then increment count transactionally
+          await set(userVoteRef, { option: option, ts: Date.now() });
+          // increment count
+          await runTransaction(optCountRef, (c) => (c || 0) + 1);
+          // set local marker
+          localStorage.setItem('poll_voted', '1');
+          showVoted(option);
+        } catch(err){
+          console.error('Vote failed:', err);
+          alert('Vote failed. Try again.');
+        }
+      }
+
+      // expose castVote to button handler below by binding to closure
+      window._castVote = castVote;
+
+    }).catch(err=>{
+      console.error('Firebase load error', err);
+      enableButtons(true);
     });
   } else {
-    console.warn('Firebase config not provided. Add firebaseConfig in the file to enable DB.');
+    console.warn('Firebase config not provided. DB disabled.');
+    enableButtons(true);
   }
 
-  // helper to create default options structure if missing
-  async function ensureOptionsInit(){
-    if(!db) return;
-    const r = ref(db, 'poll/options');
-    // we will attempt to set options only if empty (non-destructive)
-    // (If DB empty, set initial options)
-    import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js').then(({ get, set })=>{
-      // simplified: we'll use get via fetch on REST if needed, but this demo uses onValue listener
+  // Button click handlers (works even before auth completes)
+  buttons.forEach(b=>{
+    b.addEventListener('click', async (e)=>{
+      const opt = b.getAttribute('data-option');
+      // local guard
+      if(localStorage.getItem('poll_voted')){
+        showVoted(null);
+        return;
+      }
+      // if using DB/auth and cast function available, use it
+      if(window._castVote && currentUid){
+        // disable buttons immediately to prevent double-click
+        enableButtons(false);
+        await window._castVote(currentUid, opt);
+        return;
+      }
+      // fallback: if DB not configured, increment local counters only (for demo)
+      incrementLocalFallback(opt);
+      localStorage.setItem('poll_voted','1');
+      showVoted(opt);
+    });
+  });
+
+  // Refresh button
+  refreshBtn.addEventListener('click', async ()=>{
+    if(!db){
+      alert('Realtime DB not configured.');
+      return;
+    }
+    // manual get of counts
+    const dbMod = await import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js');
+    const { get, ref, child } = dbMod;
+    try{
+      const snap = await get(child(ref(db), 'poll/counts'));
+      updateLocalResults(snap.val() || {});
+    }catch(e){
+      console.error(e);
+    }
+  });
+
+  // show voted message & disable vote buttons
+  function showVoted(option){
+    votedMsg.style.display = 'flex';
+    if(option) votedText.textContent = `You've already voted (${option}). Thank you!`;
+    else votedText.textContent = `You've already voted. Thank you!`;
+    enableButtons(false);
+  }
+
+  // enable/disable vote buttons
+  function enableButtons(enable){
+    buttons.forEach(b=>{
+      b.disabled = !enable;
+      b.style.opacity = enable ? 1 : 0.6;
+      b.style.cursor = enable ? 'pointer' : 'default';
     });
   }
 
+  // update UI with counts
   function updateLocalResults(data){
-    // data: {Green: 2, Blue:1, ...}
-    const keys = ['Green','Blue','Red','Yellow'];
+    // data might look like { Green: 3, Blue: 1, ... }
     let total = 0;
-    keys.forEach(k=> total += (data && data[k]) ? Number(data[k]) : 0);
+    OPTIONS.forEach(k => total += (data && data[k]) ? Number(data[k]) : 0);
     votesText.textContent = 'Votes: ' + total;
 
-    // build result rows
     resultsArea.innerHTML = '';
-    keys.forEach(key=>{
-      const count = (data && data[key]) ? Number(data[key]) : 0;
-      const percent = total ? Math.round((count/total)*100) : 0;
+    OPTIONS.forEach(k=>{
+      const count = (data && data[k]) ? Number(data[k]) : 0;
+      const percent = total ? Math.round((count / total) * 100) : 0;
       const row = document.createElement('div');
       row.className = 'result-row';
       row.innerHTML = `
-        <div style="min-width:120px">${key}</div>
+        <div style="min-width:120px">${k}</div>
         <div style="display:flex;align-items:center;gap:8px;flex:1">
           <div class="bar" aria-hidden><i style="width:${percent}%"></i></div>
           <div style="min-width:48px;text-align:right">${count} (${percent}%)</div>
@@ -185,51 +312,27 @@
     resultsArea.style.display = 'block';
   }
 
-  // Click handlers: write vote to DB
-  buttons.forEach(b=>{
-    b.addEventListener('click', async (e)=>{
-      const opt = b.getAttribute('data-option');
-      if(!db){
-        alert('Firebase not configured — votes will not be saved. Paste firebaseConfig in the file and redeploy.');
-        return;
-      }
-      // Use transaction-like increment
-      const { ref, runTransaction } = await import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js');
-      const keyRef = ref(db, 'poll/counts/' + opt);
-      runTransaction(keyRef, (current)=>{
-        return (current || 0) + 1;
-      }).then(()=> {
-        // optional local feedback
-        b.animate([{ transform:'translateY(-2px)'},{ transform:'translateY(0)'}],{duration:120});
-      }).catch(err=>{
-        console.error('Vote failed',err);
-      });
-    });
-  });
-
-  // Setup listener to update UI when DB changes
-  async function setupRealtimeListeners(){
-    if(!db) return;
-    const { ref, onValue } = await import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js');
-    const countsRef = ref(db, 'poll/counts');
-    onValue(countsRef, (snapshot)=>{
-      updateLocalResults(snapshot.val() || {});
-    }, (err)=> console.error(err));
+  // local fallback increments (only for demo if DB not present)
+  function incrementLocalFallback(opt){
+    const key = 'local_counts';
+    const raw = localStorage.getItem(key);
+    const obj = raw ? JSON.parse(raw) : {};
+    obj[opt] = (obj[opt] || 0) + 1;
+    localStorage.setItem(key, JSON.stringify(obj));
+    updateLocalResults(obj);
   }
 
-  // manual refresh (reads current snapshot)
-  refreshBtn.addEventListener('click', async ()=>{
-    if(!db){ alert('Firebase not configured.'); return; }
-    const { ref, get, child } = await import('https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js');
-    const dbRef = ref(db);
-    get(child(dbRef, 'poll/counts')).then(snap=>{
-      updateLocalResults(snap.val() || {});
-    }).catch(err=> console.error(err));
-  });
+  // on load: if localStorage says voted, show message already
+  if(hasVotedLocal){
+    showVoted(null);
+  } else {
+    // keep buttons disabled initially until auth check completes (if using DB)
+    if(hasConfig) enableButtons(false);
+  }
 
-  // initial local empty results
+  // initial empty results (until DB onValue loads)
   updateLocalResults({});
 </script>
+
 </body>
 </html>
-
